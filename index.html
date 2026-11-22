@@ -77,6 +77,9 @@
   }
   button:hover:not(:disabled) { filter: brightness(1.08); }
   button:disabled { opacity: .5; cursor: default; }
+  button.done, button.done:disabled { opacity: 1; background: transparent; color: var(--thistle); border: 1px solid var(--thistle); }
+  .msg.flash { animation: flash 1.6s ease-out; }
+  @keyframes flash { from { box-shadow: 0 0 0 4px var(--thistle-soft); } to { box-shadow: 0 0 0 0 transparent; } }
   button.ghost { background: transparent; color: var(--ink-soft); border: 1px solid var(--line); }
   .progress { flex: 1 1 200px; min-width: 0; }
   .bar { height: 10px; background: var(--thistle-soft); border-radius: 99px; overflow: hidden; }
@@ -275,6 +278,8 @@ const loadBtn = $("load"), bar = $("bar"), barWrap = bar.parentElement, statusEl
 const log = $("log"), form = $("form"), input = $("input"), sendBtn = $("send"), stopBtn = $("stop");
 
 let history = [];
+let wasCached = false;   // model was already in the browser cache on page load
+let downloaded = 0;      // bytes reported by the last progress event
 let busy = false;
 let current = null;
 
@@ -317,6 +322,7 @@ worker.onmessage = ({ data }) => {
       break;
     case "progress":
       if (data.total) {
+        downloaded = data.total;
         setBar((data.loaded / data.total) * 100);
         setStatus(`Downloading… ${mb(data.loaded)} of ${mb(data.total)}`);
       }
@@ -324,11 +330,19 @@ worker.onmessage = ({ data }) => {
     case "warming":
       setBar(100); setStatus("Downloaded. Waking Eeyore up…");
       break;
-    case "ready":
-      setStatus("Ready. Runs on your device; nothing leaves it.");
-      loadBtn.textContent = "Model ready"; loadBtn.disabled = true;
-      input.disabled = false; sendBtn.disabled = false; input.focus();
+    case "ready": {
+      setBar(100);
+      setStatus(wasCached
+        ? "Loaded from this device. It was already downloaded, so nothing new was fetched. Eeyore is ready below."
+        : `Downloaded${downloaded ? " " + mb(downloaded) : ""} and saved on this device. Eeyore is ready below.`);
+      loadBtn.textContent = "✓ Eeyore is ready"; loadBtn.disabled = true; loadBtn.classList.add("done");
+      input.disabled = false; sendBtn.disabled = false;
+      const hello = addMsg("assistant", "Oh. You've woken me up. I suppose you'd better say something, then.");
+      hello.parentElement.classList.add("flash");
+      log.parentElement.scrollIntoView({ behavior: "smooth", block: "end" });
+      input.focus({ preventScroll: true });
       break;
+    }
     case "token":
       if (current) { current.classList.remove("typing"); current.textContent = data.text.trimStart(); log.scrollTop = log.scrollHeight; }
       break;
@@ -355,6 +369,7 @@ worker.onmessage = ({ data }) => {
     if (!("caches" in self)) return;
     const keys = await (await caches.open(CACHE_NAME)).keys();
     if (keys.some((r) => r.url.includes(MODEL_ID) && r.url.endsWith(".onnx"))) {
+      wasCached = true;
       loadBtn.textContent = "Load model";
       setStatus("Already downloaded on this device. Loading takes a few seconds.");
     }
