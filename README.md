@@ -3,9 +3,16 @@
 A single-page chat with Eeyore that runs a small language model entirely in the browser using
 [Transformers.js](https://huggingface.co/docs/transformers.js) 4.3.2.
 
-- **Model:** `HuggingFaceTB/SmolLM2-360M-Instruct`
-  - WebGPU: `q4f16` weights, about 270 MB (`q4` if the GPU lacks fp16 support)
-  - CPU fallback (WASM): `q8` weights, about 370 MB
+- **Models:** visitors pick a size; the choice is remembered and they can switch later.
+
+  | Size   | Model                                  | WebGPU download (q4f16) | CPU fallback |
+  |--------|----------------------------------------|-------------------------|--------------|
+  | Small  | `HuggingFaceTB/SmolLM2-360M-Instruct`  | about 270 MB            | `q8`         |
+  | Medium | `onnx-community/Qwen2.5-0.5B-Instruct` | about 480 MB            | `q8`         |
+  | Large  | `onnx-community/Llama-3.2-1B-Instruct` | about 1 GB              | `q4`         |
+
+  Sizes are approximate; the progress bar shows the real total. Llama 3.2 is under the Llama 3.2
+  Community License, which asks for "Built with Llama" attribution (shown in the page footer).
 - The model downloads once and the browser caches it. All generation runs on the visitor's device.
 - The model runs in a Web Worker so the page stays responsive while it generates.
 - The context stays short: a fixed persona and two example exchanges, plus the last 3 exchanges at most,

@@ -48,6 +48,7 @@
   }
 
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   html, body { margin: 0; }
   body {
     background: linear-gradient(180deg, var(--bg-deep), var(--bg) 280px);
@@ -81,6 +82,18 @@
   .msg.flash { animation: flash 1.6s ease-out; }
   @keyframes flash { from { box-shadow: 0 0 0 4px var(--thistle-soft); } to { box-shadow: 0 0 0 0 transparent; } }
   button.ghost { background: transparent; color: var(--ink-soft); border: 1px solid var(--line); }
+  .sizes { border: 0; padding: 0; margin: 0 0 14px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .sizes legend { font-weight: 700; font-size: .9rem; margin-bottom: 8px; padding: 0; }
+  .size { position: relative; display: block; cursor: pointer; border: 1px solid var(--line); border-radius: 10px; padding: 9px 10px; background: var(--bg); }
+  .size input { position: absolute; opacity: 0; pointer-events: none; }
+  .size b { display: block; font-size: .95rem; }
+  .size span { display: block; font-size: .78rem; color: var(--ink-soft); line-height: 1.35; }
+  .size .mb { color: var(--thistle); font-weight: 700; margin-top: 2px; }
+  .size:has(input:checked) { border-color: var(--thistle); box-shadow: inset 0 0 0 1px var(--thistle); background: var(--thistle-soft); }
+  .size:has(input:focus-visible) { outline: 2px solid var(--thistle); outline-offset: 2px; }
+  .size:has(input:disabled) { cursor: default; opacity: .6; }
+  .size .tick { position: absolute; top: 7px; right: 8px; font-size: .72rem; color: var(--thistle); font-weight: 700; }
+  @media (max-width: 460px) { .sizes { grid-template-columns: 1fr; } .size b, .size span.mb { display: inline; margin-right: 6px; } }
   .progress { flex: 1 1 200px; min-width: 0; }
   .bar { height: 10px; background: var(--thistle-soft); border-radius: 99px; overflow: hidden; }
   .bar > div { height: 100%; width: 0; background: var(--thistle); transition: width .2s; }
@@ -135,12 +148,20 @@
   <section class="card setup" aria-labelledby="dl-title">
     <p id="dl-title"><strong>Eeyore lives on your device.</strong></p>
     <p class="note">
-      Pressing <strong>Download model</strong> fetches a small language model
-      (<span id="model-name">SmolLM2-360M-Instruct</span>, about 270 MB with WebGPU, about 370 MB on the CPU) <strong>once</strong>.
+      Pressing <strong>Download model</strong> fetches a language model <strong>once</strong>.
       Your browser keeps it, so later visits start almost instantly.
       After that the conversation <strong>runs entirely on your device</strong>: nothing you type is sent to a server.
       It uses your graphics card through WebGPU when it can, and your processor otherwise (slower, but it gets there).
     </p>
+    <fieldset class="sizes" id="sizes">
+      <legend>How much Eeyore would you like?</legend>
+      <label class="size"><input type="radio" name="size" value="small">
+        <b>Small</b><span class="mb">≈ 270 MB</span><span>Quickest. Wanders off script now and then.</span><span class="tick" hidden></span></label>
+      <label class="size"><input type="radio" name="size" value="medium">
+        <b>Medium</b><span class="mb">≈ 480 MB</span><span>A bit steadier. Still fine without WebGPU.</span><span class="tick" hidden></span></label>
+      <label class="size"><input type="radio" name="size" value="large">
+        <b>Large</b><span class="mb">≈ 1 GB</span><span>Most like himself. Best with WebGPU.</span><span class="tick" hidden></span></label>
+    </fieldset>
     <div class="row">
       <button id="load">Download model</button>
       <div class="progress" aria-live="polite">
@@ -161,7 +182,8 @@
     </form>
   </section>
   <div class="foot">
-    <span>Eeyore only remembers the last few things you said. He says he's used to being forgotten too.</span>
+    <span>Eeyore only remembers the last few things you said. He says he's used to being forgotten too.
+      <br>Models: SmolLM2 (Apache-2.0), Qwen2.5 (Apache-2.0), Llama 3.2 (Built with Llama).</span>
     <button id="clear" type="button">Start over</button>
   </div>
 </div>
@@ -188,14 +210,17 @@ async function pickBackend() {
   } catch { return null; }
 }
 
-let MODEL_ID;
+let MODEL_ID, WASM_DTYPE;
 
 async function load() {
   const progress_callback = (p) => {
     if (p.status === "progress_total") self.postMessage({ type: "progress", loaded: p.loaded, total: p.total });
   };
   const gpu = await pickBackend();
-  const attempts = gpu ? [gpu, { device: "wasm", dtype: "q8" }] : [{ device: "wasm", dtype: "q8" }];
+    const cpu = { device: "wasm", dtype: WASM_DTYPE };
+  const attempts = gpu ? [gpu, cpu] : [cpu];
+  // Switching sizes: free the previous model's memory first.
+  if (generator) { try { await generator.dispose(); } catch {} generator = null; }
   let lastErr;
   for (const opts of attempts) {
     try {
@@ -239,7 +264,7 @@ async function generate({ pinned, history }) {
 
 self.onmessage = async ({ data }) => {
   try {
-    if (data.type === "load") { MODEL_ID = data.model; await load(); }
+    if (data.type === "load") { MODEL_ID = data.model; WASM_DTYPE = data.wasmDtype; await load(); }
     else if (data.type === "generate") await generate(data);
     else if (data.type === "stop") stopper.interrupt();
   } catch (e) {
@@ -267,18 +292,27 @@ const PINNED = [
   { role: "user", content: "I brought you a thistle." },
   { role: "assistant", content: "A thistle. For me. Well. I expect it's the prickly sort, which is the best sort. Thanks for noticing me." },
 ];
-const MODEL_ID = "HuggingFaceTB/SmolLM2-360M-Instruct";
+// Sizes are the WebGPU (q4f16) downloads; the CPU path fetches somewhat more.
+const MODELS = {
+  small:  { label: "Small",  id: "HuggingFaceTB/SmolLM2-360M-Instruct",  size: "about 270 MB", wasmDtype: "q8" },
+  medium: { label: "Medium", id: "onnx-community/Qwen2.5-0.5B-Instruct", size: "about 480 MB", wasmDtype: "q8" },
+  large:  { label: "Large",  id: "onnx-community/Llama-3.2-1B-Instruct", size: "about 1 GB",   wasmDtype: "q4" },
+};
 const CACHE_NAME = "transformers-cache";  // Transformers.js default (env.cacheKey)
 const MAX_HISTORY = 6;          // last 3 exchanges at most; the worker trims further by token count
 const MAX_MSG_CHARS = 500;      // long pastes get cut so one message can't flood the window
 
 // ---- Elements --------------------------------------------------------------
 const $ = (id) => document.getElementById(id);
+const sizeInputs = [...document.querySelectorAll('input[name="size"]')];
 const loadBtn = $("load"), bar = $("bar"), barWrap = bar.parentElement, statusEl = $("status"), badge = $("backend");
 const log = $("log"), form = $("form"), input = $("input"), sendBtn = $("send"), stopBtn = $("stop");
 
 let history = [];
-let wasCached = false;   // model was already in the browser cache on page load
+let selected = "small";  // size picked in the UI
+let loadedKey = null;    // size currently loaded in the worker
+let loadingKey = null;   // size being loaded right now
+const cachedKeys = new Set();  // sizes already saved in this browser
 let downloaded = 0;      // bytes reported by the last progress event
 let busy = false;
 let current = null;
@@ -309,6 +343,7 @@ function setBusy(b) {
   busy = b;
   sendBtn.disabled = b; stopBtn.hidden = !b;
   input.disabled = false;
+  refreshPicker();  // no switching sizes mid-reply
   if (!b) input.focus();
 }
 
@@ -332,12 +367,18 @@ worker.onmessage = ({ data }) => {
       break;
     case "ready": {
       setBar(100);
-      setStatus(wasCached
-        ? "Loaded from this device. It was already downloaded, so nothing new was fetched. Eeyore is ready below."
-        : `Downloaded${downloaded ? " " + mb(downloaded) : ""} and saved on this device. Eeyore is ready below.`);
-      loadBtn.textContent = "✓ Eeyore is ready"; loadBtn.disabled = true; loadBtn.classList.add("done");
+      const label = MODELS[loadingKey].label;
+      setStatus(cachedKeys.has(loadingKey)
+        ? `${label} model loaded from this device. It was already downloaded, so nothing new was fetched. Eeyore is ready below.`
+        : `${label} model downloaded${downloaded ? " (" + mb(downloaded) + ")" : ""} and saved on this device. Eeyore is ready below.`);
+      const first = loadedKey === null;
+      cachedKeys.add(loadingKey);
+      loadedKey = loadingKey; loadingKey = null;
+      refreshPicker(); refreshButton();
       input.disabled = false; sendBtn.disabled = false;
-      const hello = addMsg("assistant", "Oh. You've woken me up. I suppose you'd better say something, then.");
+      const hello = addMsg("assistant", first
+        ? "Oh. You've woken me up. I suppose you'd better say something, then."
+        : "Different size, same donkey. Not that anyone asked me.");
       hello.parentElement.classList.add("flash");
       log.parentElement.scrollIntoView({ behavior: "smooth", block: "end" });
       input.focus({ preventScroll: true });
@@ -356,41 +397,87 @@ worker.onmessage = ({ data }) => {
     }
     case "error":
       if (current) { current.classList.remove("typing"); current.textContent = "Something went wrong. It would."; current = null; setBusy(false); }
-      else { loadBtn.disabled = false; loadBtn.textContent = "Try again"; }
-      setStatus("Error: " + data.message);
+      else { loadFailed(); }
+      setStatus("Error: " + data.message + (loadedKey === null && selected !== "small" ? " Try a smaller size." : ""));
       console.error(data.message);
       break;
   }
 };
 
-// Returning visitor? The model is already in the browser's cache, so say so.
+// ---- Size picker -----------------------------------------------------------
+function refreshPicker() {
+  for (const el of sizeInputs) {
+    el.checked = el.value === selected;
+    el.disabled = loadingKey !== null || busy;
+    const tick = el.parentElement.querySelector(".tick");
+    tick.hidden = !(el.value === loadedKey || cachedKeys.has(el.value));
+    tick.textContent = el.value === loadedKey ? "✓ in use" : "saved";
+  }
+}
+
+function refreshButton() {
+  const m = MODELS[selected];
+  loadBtn.classList.toggle("done", selected === loadedKey);
+  if (loadingKey) return;
+  if (selected === loadedKey) { loadBtn.textContent = "✓ Eeyore is ready"; loadBtn.disabled = true; return; }
+  loadBtn.disabled = false;
+  const cached = cachedKeys.has(selected);
+  const verb = loadedKey ? "Switch to" : cached ? "Load" : "Download";
+  loadBtn.textContent = `${verb} ${m.label.toLowerCase()} model` + (cached ? "" : ` (${m.size})`);
+  if (!loadedKey) setStatus(cachedKeys.has(selected)
+    ? "Already downloaded on this device. Loading takes a few seconds."
+    : "Not downloaded yet.");
+}
+
+function loadFailed() {
+  loadingKey = null;
+  refreshPicker(); refreshButton();
+  loadBtn.textContent = "Try again";
+  if (loadedKey) { input.disabled = false; sendBtn.disabled = false; }
+}
+
+try { const saved = localStorage.getItem("eeyore-size"); if (saved in MODELS) selected = saved; } catch {}
+for (const el of sizeInputs) el.addEventListener("change", () => {
+  selected = el.value;
+  try { localStorage.setItem("eeyore-size", selected); } catch {}
+  refreshPicker(); refreshButton();
+});
+refreshPicker(); refreshButton();
+
+// Returning visitor? Mark the sizes already in the browser's cache.
 (async () => {
   try {
     if (!("caches" in self)) return;
-    const keys = await (await caches.open(CACHE_NAME)).keys();
-    if (keys.some((r) => r.url.includes(MODEL_ID) && r.url.endsWith(".onnx"))) {
-      wasCached = true;
-      loadBtn.textContent = "Load model";
-      setStatus("Already downloaded on this device. Loading takes a few seconds.");
+    const urls = (await (await caches.open(CACHE_NAME)).keys()).map((r) => r.url);
+    for (const [key, m] of Object.entries(MODELS)) {
+      if (urls.some((u) => u.includes("/" + m.id + "/") && u.endsWith(".onnx"))) cachedKeys.add(key);
     }
+    refreshPicker(); refreshButton();
   } catch {}
 })();
 
 // A failed library import (offline, blocked CDN) surfaces here, not as a message.
 worker.onerror = (e) => {
   e.preventDefault?.();
+  loadFailed();
   setStatus("Couldn't start the model runtime. Check your connection and try again.");
-  loadBtn.disabled = false; loadBtn.textContent = "Try again";
   console.error(e.message || e);
 };
 
 // ---- UI events -------------------------------------------------------------
 loadBtn.addEventListener("click", () => {
-  loadBtn.disabled = true; loadBtn.textContent = "Downloading…";
+  if (busy || loadingKey) return;
+  loadingKey = selected; downloaded = 0;
+  loadBtn.disabled = true;
+  loadBtn.textContent = cachedKeys.has(selected) ? "Loading…" : "Downloading…";
+  input.disabled = true; sendBtn.disabled = true;
+  setBar(0); badge.hidden = true;
+  refreshPicker();
   setStatus("Checking what your device supports…");
   // Ask the browser not to evict the cached model when storage runs low.
   navigator.storage?.persist?.().catch(() => {});
-  worker.postMessage({ type: "load", model: MODEL_ID });
+  const m = MODELS[selected];
+  worker.postMessage({ type: "load", model: m.id, wasmDtype: m.wasmDtype });
 });
 
 form.addEventListener("submit", (e) => {
